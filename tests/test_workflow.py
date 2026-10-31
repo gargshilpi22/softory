@@ -10,7 +10,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from tests.helpers import coord, git_project, git_status, install, needs_sources, revision, run, softory
+from tests.helpers import coord, git_project, git_status, in_terminal, install, needs_sources, revision, run, softory
 
 
 def start(root: Path, role: str) -> dict[str, str]:
@@ -32,7 +32,7 @@ def at_terminal(root: Path, *args: str, answer: str = "yes") -> dict:
     """Run softory as the owner would, in a terminal, typing ``answer`` at the prompt."""
     command = shlex.join([str(root / ".agents/softory/bin/softory"), *args])
     env = {k: v for k, v in os.environ.items() if k not in ("COORDINATION_SESSION", "SOFTORY_ROLE")}
-    result = subprocess.run(["script", "-qec", command, "/dev/null"], input=answer + "\n", cwd=root, env=env,
+    result = subprocess.run(in_terminal(command), input=answer + "\n", cwd=root, env=env,
                             capture_output=True, text=True, check=False)
     output = result.stdout.replace("\r", "")
     return json.loads(output[output.index("{\n"):])  # after the echoed answer and the prompt
@@ -199,6 +199,7 @@ class WorkflowTest(unittest.TestCase):
         manifest = json.loads(manifest_path.read_text())
         old = [p if "*" in p else p + "/" for p in manifest["exclude_patterns"]]  # as 0.1.0 wrote them
         manifest["exclude_patterns"] = old
+        manifest_path.chmod(0o644)  # softory keeps it read-only
         manifest_path.write_text(json.dumps(manifest))
         exclude = self.root / ".git/info/exclude"
         exclude.write_text("# softory:start (managed by softory; do not edit inside this block)\n" + "\n".join(old) + "\n# softory:end\n")
@@ -360,8 +361,8 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("review:unit:legacy", failing(gate(self.root, "VR-FIX-2", "quinn")))  # still needs someone else
         refused = softory(self.root, "approve", "--all", check=False)
         self.assertIn("owner_terminal_required", refused.stderr)
-        shown = subprocess.run(["script", "-qec", shlex.join([str(self.root / ".agents/softory/bin/softory"), "approve", "--all"]),
-                                "/dev/null"], input="no\n", cwd=self.root, capture_output=True, text=True, check=False)
+        shown = subprocess.run(in_terminal(shlex.join([str(self.root / ".agents/softory/bin/softory"), "approve", "--all"])),
+                                input="no\n", cwd=self.root, capture_output=True, text=True, check=False)
         self.assertIn('CHECK THESE FIRST', shown.stdout)  # a fix posing as a review is flagged
         self.assertIn('VR-FIX-2 ("Fix")', shown.stdout)
         rejected = at_terminal(self.root, "approve", asked["proposal"], "--reject")
@@ -433,8 +434,8 @@ class WorkflowTest(unittest.TestCase):
         refused = softory(self.root, "approve", "PROP-1", check=False)
         self.assertIn("owner_terminal_required", refused.stderr)
         self.assertIn("PROP-1", at_terminal(self.root, "approve", "--all")["note"])  # stand-ins go by ID, not --all
-        declined = subprocess.run(["script", "-qec", shlex.join([str(self.root / ".agents/softory/bin/softory"), "approve", "PROP-1"]),
-                                   "/dev/null"], input="no\n", cwd=self.root, capture_output=True, text=True, check=False)
+        declined = subprocess.run(in_terminal(shlex.join([str(self.root / ".agents/softory/bin/softory"), "approve", "PROP-1"])),
+                                input="no\n", cwd=self.root, capture_output=True, text=True, check=False)
         self.assertIn("not_approved", declined.stdout)
         approved = at_terminal(self.root, "approve", "PROP-1")
         self.assertEqual(approved["status"], "approved")

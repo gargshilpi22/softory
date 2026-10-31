@@ -6,13 +6,13 @@ ledger. With a command set, the gate's ``verified`` check needs a passing
 ledger entry for that commit, so "tests pass" is something softory saw,
 not something an agent wrote. ``lane_paths`` fails when the commit's diff
 touches paths outside the task's lane, unless Quinn accepted it as cross-lane.
+Agents wrote the tests, so they run in ``containment``'s sandbox on macOS.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import containment
 from .coordination import Coordination
 from .errors import SoftoryError
 from .gitlocal import git
@@ -84,9 +85,9 @@ def run(project: Project, coord: Coordination, charter: dict[str, Any], task_id:
                 (tree / shared).symlink_to(source)
         started = datetime.now(timezone.utc)
         try:
-            done = subprocess.run(command, shell=True, cwd=tree, capture_output=True, text=True,  # noqa: S602 - owner's command
-                                  timeout=float(charter["verify"]["timeout_minutes"]) * 60, check=False,
-                                  env={k: v for k, v in os.environ.items() if k not in ("COORDINATION_SESSION",)})
+            done = subprocess.run(containment.test_command(project, charter, command),  # noqa: S603 - owner's command
+                                  cwd=tree, capture_output=True, text=True, check=False, env=containment.test_env(),
+                                  timeout=float(charter["verify"]["timeout_minutes"]) * 60)
             code, output = done.returncode, done.stdout + done.stderr
         except subprocess.TimeoutExpired as error:
             code, output = 124, f"{error.stdout or ''}{error.stderr or ''}\n(timed out)"
@@ -98,7 +99,8 @@ def run(project: Project, coord: Coordination, charter: dict[str, Any], task_id:
     log = project.bundle / "run" / "verify" / f"{task_id}-{sha[:12]}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(str(output)[-200_000:], encoding="utf-8")
-    entry = {"task": task_id, "passed": passed, "exit": code, "command": command, "by": actor,
+    sandboxed = containment.test_command(project, charter, command)[0] == containment.SANDBOX_EXEC
+    entry = {"task": task_id, "passed": passed, "exit": code, "command": command, "sandboxed": sandboxed, "by": actor,
              "at": started.isoformat(timespec="seconds"),
              "seconds": round((datetime.now(timezone.utc) - started).total_seconds(), 1)}
     entries = ledger(project)
@@ -107,7 +109,8 @@ def run(project: Project, coord: Coordination, charter: dict[str, Any], task_id:
     ledger_path(project).write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     coord.run("evidence", "add", "--task", task_id, "--uri", f"softory-verify:{'pass' if passed else 'fail'}:{sha}",
               "--type", "test", "--actor", actor)
-    return {"task": task_id, "commit": sha, "passed": passed, "exit": code, "log": str(log), "tail": tail}
+    return {"task": task_id, "commit": sha, "passed": passed, "exit": code, "sandboxed": sandboxed, "log": str(log),
+            "tail": tail}
 
 
 def changed_files(root: Path, base: str, sha: str) -> list[str] | None:

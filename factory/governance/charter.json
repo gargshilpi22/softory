@@ -31,9 +31,12 @@
     "max_wait_minutes": 60
   },
   "verify": {
+    "description": "The project's tests. On macOS they run in a sandbox with no internet (localhost works) and no access to credentials like ~/.aws and ~/.ssh. network: true lets them reach the internet; sandbox: false turns the sandbox off, and softory run then refuses nothing on its account.",
     "command": "",
     "timeout_minutes": 20,
-    "share": []
+    "share": [],
+    "sandbox": true,
+    "network": false
   },
   "lanes": {
     "frontend": [],
@@ -42,7 +45,7 @@
   },
   "shared_paths": ["docs/**", "*.md"],
   "permissions": {
-    "description": "Claude Code runs each role with a settings file built from these and its lane paths. Commands are prefixes.",
+    "description": "Claude Code runs each role with a settings file built from these and its lane paths, inside Claude Code's sandbox (no network for Bash, no reading credentials). Commands are prefixes. Roles can't push or fetch unless you add git push or git fetch here, and pushing also needs a network allowance.",
     "allow_bash": [],
     "deny_bash": ["git push --force", "git push -f", "git reset --hard", "rm -rf"]
   },

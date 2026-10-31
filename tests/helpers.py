@@ -10,8 +10,10 @@ import atexit
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +26,13 @@ TRACKER_SRC = os.environ.get("SOFTORY_TRACKER_SRC")
 PREVIOUS_SRC = os.environ.get("SOFTORY_SCAFFOLD_PREVIOUS_SRC")
 PINNED = json.loads((REPO / "dependencies.json").read_text(encoding="utf-8"))["scaffold"]["version"]
 COORDINATION = ".agents/agentic-project-scaffold-lite/bin/coordination"
+
+
+def in_terminal(command: str) -> list[str]:
+    """argv that runs a shell command under a pseudo-terminal, with BSD (macOS) or util-linux ``script``."""
+    if sys.platform == "darwin":  # BSD script drops input that arrives before the child reads, so wait a moment
+        return ["/bin/sh", "-c", f"(sleep 1; cat) | script -q /dev/null /bin/sh -c {shlex.quote(command)}"]
+    return ["script", "-qec", command, "/dev/null"]
 
 
 def run(args: list[str], cwd: Path, env: dict[str, str] | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:

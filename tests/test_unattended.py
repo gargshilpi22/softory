@@ -8,11 +8,12 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from tests.helpers import REPO, coord, git_project, install, needs_sources, revision, run, softory
+from tests.helpers import REPO, coord, git_project, in_terminal, install, needs_sources, revision, run, softory
 
 sys.path.insert(0, str(REPO / "lib"))
 from softory import charter as charters  # noqa: E402
-from softory import digest, perms  # noqa: E402
+from softory import containment, digest, perms  # noqa: E402
+from softory.project import Project  # noqa: E402
 import os  # noqa: E402
 import shlex  # noqa: E402
 import subprocess  # noqa: E402
@@ -24,12 +25,17 @@ def at_terminal(root: Path, *args: str) -> dict:
     """Run softory in a terminal, typing yes; the JSON result follows the prompt."""
     command = shlex.join([str(root / ".agents/softory/bin/softory"), *args])
     env = {k: v for k, v in os.environ.items() if k not in ("COORDINATION_SESSION", "SOFTORY_ROLE")}
-    result = subprocess.run(["script", "-qec", command, "/dev/null"], input="yes\n", cwd=root, env=env,
+    result = subprocess.run(in_terminal(command), input="yes\n", cwd=root, env=env,
                             capture_output=True, text=True, check=False)
     output = result.stdout.replace("\r", "").split("Type yes to approve: ")[-1]
     return json.loads(output[output.index("{"):])
 
 DEFAULTS = json.loads((Path(__file__).resolve().parents[1] / "factory/governance/charter.json").read_text())
+PROJECT = Project(Path("/tmp/softory-unit"))
+#: A charter that is safe to run unwatched: lanes and spending caps set, and a stand-in for claude.
+SAFE = {"lanes": {"frontend": ["web/**"], "backend": ["api/**"], "infra": ["infra/**"]},
+        "budget": {"usd_per_run": 2, "usd_per_role_per_day": 20},
+        "run": {"harnesses": {"claude": ["sh"], "codex": ["sh"]}}}
 
 
 class CharterUnitTest(unittest.TestCase):
@@ -56,16 +62,54 @@ class CharterUnitTest(unittest.TestCase):
 
     def test_claude_settings_keep_a_role_in_its_lane(self) -> None:
         charter = charters.merge(DEFAULTS, {"lanes": {"frontend": ["web/**"]}})
-        allow = perms.settings_for(charter, "jade")["permissions"]["allow"]
+        allow = perms.settings_for(PROJECT, charter, "jade")["permissions"]["allow"]
         self.assertIn("Edit(./web/**)", allow)
         self.assertNotIn("Edit", allow)
-        self.assertIn("Edit", perms.settings_for(charter, "gold")["permissions"]["allow"])  # backend paths not set
+        self.assertIn("Edit", perms.settings_for(PROJECT, charter, "gold")["permissions"]["allow"])  # backend paths not set
         self.assertEqual(perms.unscoped(charter), ["gold"])
-        deny = perms.settings_for(charter, "jade")["permissions"]["deny"]
+        deny = perms.settings_for(PROJECT, charter, "jade")["permissions"]["deny"]
         self.assertIn("Edit(./.agents/**)", deny)
 
+    def test_claude_settings_sandbox_bash_and_hide_credentials(self) -> None:
+        settings = perms.settings_for(PROJECT, DEFAULTS, "jade")
+        sandbox = settings["sandbox"]
+        self.assertTrue(sandbox["enabled"] and sandbox["failIfUnavailable"])
+        self.assertFalse(sandbox["allowUnsandboxedCommands"] or sandbox["autoAllowBashIfSandboxed"])
+        self.assertEqual(sandbox["network"]["allowedDomains"], [])
+        self.assertIn("~/.aws", sandbox["filesystem"]["denyRead"])
+        self.assertIn(str(PROJECT.root.resolve() / ".coordination"), sandbox["filesystem"]["denyWrite"])
+        self.assertIn(".agents/softory/bin/softory *", sandbox["excludedCommands"])
+        self.assertIn("Read(~/.ssh/**)", settings["permissions"]["deny"])
+        allow = settings["permissions"]["allow"]
+        self.assertFalse([rule for rule in allow if rule.startswith(("Bash(git push", "Bash(git fetch"))])
+        pushing = charters.merge(DEFAULTS, {"permissions": {"allow_bash": ["git push"]}})
+        self.assertIn("Bash(git push *)", perms.settings_for(PROJECT, pushing, "jade")["permissions"]["allow"])
+
+    def test_unwatched_runs_need_lanes_and_spending_caps(self) -> None:
+        found = " ".join(containment.problems(DEFAULTS))
+        self.assertIn("lanes paths for jade, gold", found)
+        self.assertIn("usd_per_run", found)
+        self.assertEqual(containment.problems(charters.merge(DEFAULTS, SAFE)), [])
+        capped_low = charters.merge(DEFAULTS, {**SAFE, "budget": {"usd_per_run": 2, "usd_per_role_per_day": 20,
+                                                                  "roles": {"toby": {"usd_per_run": 0}}}})
+        self.assertIn("(for toby)", " ".join(containment.problems(capped_low)))
+
+    def test_tests_run_without_credentials_or_the_internet(self) -> None:
+        profile = containment.test_profile(PROJECT)
+        self.assertIn(f'(subpath "{Path.home().resolve() / ".ssh"}")', profile)
+        self.assertIn("(deny network-outbound)", profile)
+        self.assertNotIn("(deny network-outbound)", containment.test_profile(PROJECT, network=True))
+        command = containment.test_command(PROJECT, DEFAULTS, "true")
+        self.assertEqual(command[-3:], ["/bin/sh", "-c", "true"])
+        self.assertEqual(command[0] == containment.SANDBOX_EXEC, containment.can_sandbox_tests())
+        off = charters.merge(DEFAULTS, {"verify": {"sandbox": False}})
+        self.assertEqual(containment.test_command(PROJECT, off, "true"), ["/bin/sh", "-c", "true"])
+        os.environ["AWS_SECRET_ACCESS_KEY"] = "x"
+        self.addCleanup(os.environ.pop, "AWS_SECRET_ACCESS_KEY", None)
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", containment.test_env())
+
     def test_claude_bash_rules_use_the_space_wildcard(self) -> None:
-        allow = perms.settings_for(DEFAULTS, "jade")["permissions"]["allow"]
+        allow = perms.settings_for(PROJECT, DEFAULTS, "jade")["permissions"]["allow"]
         self.assertTrue(all(rule.endswith(" *)") for rule in allow if rule.startswith("Bash(")))
 
     def test_usage_reads_each_harness_report(self) -> None:
@@ -184,6 +228,25 @@ class UnattendedTest(unittest.TestCase):
         self.assertIn("owner_terminal_required", softory(self.root, "resume", "--role", "jade", check=False).stderr)
         at_terminal(self.root, "resume", "--role", "jade")
         self.assertEqual(json.loads(softory(self.root, "run", "--dry-run").stdout)["started"], ["greg", "jade"])
+
+    def test_an_unsafe_charter_starts_nobody(self) -> None:
+        plan = json.loads(softory(self.root, "run").stdout)
+        self.assertEqual(plan["started"], [])
+        self.assertIn("refused", plan["skipped"]["jade"])
+        self.assertIn("usd_per_run", " ".join(plan["refused"]))
+        dry = json.loads(softory(self.root, "run", "--dry-run").stdout)
+        self.assertEqual(dry["started"], ["greg", "jade"])  # what would start once it's safe
+        self.assertTrue(dry["refused"])
+
+    @unittest.skipUnless(containment.can_sandbox_tests(), "needs macOS sandbox-exec")
+    def test_tests_cannot_write_softorys_state(self) -> None:
+        forged = self.root / ".agents/softory/run/forged"
+        self.approve({"verify": {"command": f"touch {forged}"}})
+        sha = self.commit("web/a.js", "x\n")
+        self.build("TASK-1", "jade", sha, review=False)
+        result = json.loads(softory(self.root, "verify", "TASK-1", "--actor", "jade", check=False).stdout)
+        self.assertEqual((result["passed"], result["sandboxed"]), (False, True))
+        self.assertFalse(forged.exists())
 
     def test_a_run_is_logged_and_counts_against_the_budget(self) -> None:
         self.approve({"run": {"roles": ["jade"], "harnesses": {"fake": ["sh", "-c", "echo {model} > .git/ran-{role}"]}},

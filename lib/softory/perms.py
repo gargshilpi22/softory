@@ -5,7 +5,9 @@ paths (its lane, or its docs folder), the coordination and git commands every
 role needs, the owner's extra commands, and nothing else. In ``-p`` mode a
 tool that isn't allowed is refused, so a role can't wander. Codex has no path
 rules; it runs in its workspace-write sandbox, and the gate's ``lane_paths``
-check catches a diff outside the lane for either harness.
+check catches a diff outside the lane for either harness. Claude Code's own
+sandbox and the secret paths come from ``containment``. Roles don't push or
+fetch by default; the owner adds ``git push`` to ``permissions.allow_bash``.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from . import containment
 from .project import Project
 from .runstate import state_dir
 
@@ -25,10 +28,13 @@ ROLE_DOCS = {
     "toby": ["docs/security/**"],
 }
 ROLE_LANES = {"jade": ["frontend"], "gold": ["backend", "infra"]}
-COMMON_BASH = [
+SOFTORY_BASH = [
     ".agents/softory/bin/softory", ".agents/agentic-project-scaffold-lite/bin/coordination",
-    "eval \"$(.agents/softory/bin/softory start", "git status", "git diff", "git log", "git show", "git add",
-    "git commit", "git switch", "git checkout -b", "git branch", "git fetch", "git push", "git rev-parse",
+    "eval \"$(.agents/softory/bin/softory start",
+]
+COMMON_BASH = [
+    *SOFTORY_BASH, "git status", "git diff", "git log", "git show", "git add",
+    "git commit", "git switch", "git checkout -b", "git branch", "git rev-parse",
 ]
 NEVER_EDIT = [".agents/**", ".coordination/**", ".claude/**", ".git/**", "AGENTS.md", "CLAUDE.md"]
 
@@ -45,23 +51,26 @@ def role_paths(charter: dict[str, Any], role: str) -> list[str] | None:
     return paths
 
 
-def settings_for(charter: dict[str, Any], role: str) -> dict[str, Any]:
+def settings_for(project: Project, charter: dict[str, Any], role: str) -> dict[str, Any]:
     paths = role_paths(charter, role)
-    edit = ["Edit", "Write"] if paths is None else [f"{tool}(./{glob})" for glob in paths for tool in ("Edit", "Write")]
+    # Claude Code matches path rules only as Edit(...), which covers Write too.
+    edit = ["Edit", "Write"] if paths is None else [f"Edit(./{glob})" for glob in paths]
     extra = charter.get("permissions") or {}
     bash = [*COMMON_BASH, *([charter["verify"]["command"]] if charter["verify"].get("command") else []),
             *(extra.get("allow_bash") or [])]
     allow = ["Read", "Grep", "Glob", "TodoWrite", *edit, *(f"Bash({command} *)" for command in bash)]
-    deny = [*(f"{tool}(./{path})" for path in NEVER_EDIT for tool in ("Edit", "Write")), "Read(./.env*)",
+    deny = [*(f"Edit(./{path})" for path in NEVER_EDIT), "Read(./.env*)",
             *(f"Bash({command} *)" for command in extra.get("deny_bash") or [])]
-    return {"permissions": {"defaultMode": "default", "allow": allow, "deny": deny}}
+    contained = containment.claude_settings(project, SOFTORY_BASH)
+    return {"permissions": {"defaultMode": "default", "allow": allow, "deny": [*deny, *contained["deny"]]},
+            "sandbox": contained["sandbox"]}
 
 
 def write_settings(project: Project, charter: dict[str, Any], role: str) -> Path:
     folder = state_dir(project) / "settings"
     folder.mkdir(exist_ok=True)
     path = folder / f"{role}.json"
-    path.write_text(json.dumps(settings_for(charter, role), indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(settings_for(project, charter, role), indent=2) + "\n", encoding="utf-8")
     return path
 
 

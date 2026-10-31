@@ -3,7 +3,8 @@
 ``softory run`` is one tick, meant for launchd or cron every few minutes. For
 each role in the charter it skips the role if it is paused, already running,
 over today's budget, or has nothing pending (no model call), and otherwise
-starts ``softory run-role <role>`` in the background. That wrapper picks the
+starts ``softory run-role <role>`` in the background. It starts nobody while
+``containment.problems`` finds the charter unsafe to run unwatched. That wrapper picks the
 model, runs the harness with a time limit, and logs the run, which is what
 the budget counts. Nothing here edits the database.
 """
@@ -18,7 +19,7 @@ import sys
 from typing import Any
 
 from . import charter as charters
-from . import digest, perms, runprompt, usage, watch
+from . import containment, digest, perms, runprompt, usage, watch
 from .runstate import budget, is_paused, limits_for, now, state_dir
 from .coordination import Coordination
 from .errors import SoftoryError
@@ -32,6 +33,9 @@ def tick(project: Project, coord: Coordination, dry_run: bool = False) -> dict[s
     report: dict[str, Any] = {"at": now().isoformat(timespec="seconds"), "started": [], "skipped": {}}
     if not dry_run:
         report["paged"] = digest.page_due(project, coord, charter)
+    unsafe = containment.problems(charter)
+    if unsafe:
+        report["refused"] = unsafe
     for role in charter["run"]["roles"]:
         why = is_paused(project, role)
         if why:
@@ -47,6 +51,9 @@ def tick(project: Project, coord: Coordination, dry_run: bool = False) -> dict[s
         wanted = watch.pending(project, coord, role)
         if not wanted["pending"]:
             report["skipped"][role] = "nothing pending" if not wanted["running"] else "a session is active"
+            continue
+        if unsafe and not dry_run:
+            report["skipped"][role] = "refused: the charter isn't safe to run unwatched; see refused"
             continue
         if not dry_run:
             spawn(project, role)

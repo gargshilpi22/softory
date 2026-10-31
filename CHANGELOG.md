@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+Safe to leave running. Unattended Claude Code runs can no longer read your credentials, reach the internet, or run without a spending cap.
+
+- **Claude Code roles run in Claude Code's sandbox.** Each role's settings turn it on with no way out (`allowUnsandboxedCommands: false`): Bash has no network, and neither tools nor Bash can read credentials such as `~/.aws`, `~/.ssh`, and `~/.midway`. Bash can't write softory's state (`.agents`, `.coordination`, `.git/hooks`, `.git/config`). The softory and coordination CLIs run outside the sandbox, since they write the database. The run refuses to start if the sandbox is unavailable.
+- **Roles no longer push or fetch by default.** Nothing in softory's workflow asked them to, and it was the one way out of the machine. Add `git push` to `permissions.allow_bash` to bring it back.
+- **`softory verify` runs tests in a macOS sandbox.** Agents write the tests, so they now run under `sandbox-exec` with credentials unreadable, startup files (`~/.zshrc`, `~/Library/LaunchAgents`, ...) and softory's state unwritable, no internet beyond localhost, and no `AWS_*` and similar variables. `verify.network` and `verify.sandbox` loosen it. The ledger records whether a run was sandboxed.
+- **`softory run` starts nobody while the charter is unsafe to leave alone**: lane paths missing for a Claude Code role, no dollar caps (`budget.usd_per_run` and `budget.usd_per_role_per_day`), or tests that can't be sandboxed. It says why in `refused`; `--dry-run` still shows who would start. `softory setup` lists the same.
+- Path rules in the Claude Code settings are `Edit(...)` only. Claude Code ignores `Write(...)` path rules (`Edit` covers both), so the old `Write` rules did nothing.
+- The tests that type at a terminal work on macOS as well as Linux.
+
 ## [0.4.1] - 2026-10-24
 
 Less for every agent to read. Each run loaded 7k to 12k tokens of softory text before touching code, and about a third of it repeated itself. A run now loads 36% to 45% less (Jade 11.5k to 6.3k tokens, Greg 7.4k to 4.2k). No rule changed.

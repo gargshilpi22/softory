@@ -6,7 +6,7 @@ import shutil
 from typing import Any
 
 from . import charter as charters
-from . import perms, runner, verify
+from . import containment, perms, runner, verify
 from .project import Project
 
 
@@ -29,6 +29,11 @@ def checklist(project: Project) -> dict[str, Any]:
     unscoped = perms.unscoped(charter)
     step("lane paths", not unscoped,
          f"Set `lanes` paths for {', '.join(unscoped)}, so Claude Code roles edit only their own lane.")
+    limits = charter["budget"]
+    step("spending caps", float(limits.get("usd_per_run") or 0) > 0 and float(limits.get("usd_per_role_per_day") or 0) > 0,
+         "Set `budget.usd_per_run` and `budget.usd_per_role_per_day` above 0. softory run refuses to start without them.")
+    unsafe = containment.problems(charter)
+    step("safe to run unwatched", not unsafe, "; ".join(unsafe))
     step("paging", charter["paging"].get("command"),
          "Set `paging.command`, a shell command that reads $SOFTORY_TITLE and $SOFTORY_MESSAGE, for example "
          "`osascript -e \"display notification \\\"$SOFTORY_MESSAGE\\\" with title \\\"$SOFTORY_TITLE\\\"\"`, "
